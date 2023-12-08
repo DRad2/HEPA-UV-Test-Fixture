@@ -3,54 +3,42 @@ from datetime import datetime
 from csv import unregister_dialect
 from distutils.cmd import Command
 import paramiko
-#import paramiko_test
 import subprocess
 import dearpygui.dearpygui as dpg
 import sys
 import time
-#import shared_var
-
-#from shared_var import ADC_Value
-#from shared_var import command
-#from shared_var import ssh_status
-#from shared_var import console_msg
 
 ssh = paramiko.SSHClient()
 
 global file_name
-global can_status
-global eeprom_status
 global test_fail 
 global flash_status
-#global door_open
 test_fail = False 
+
+##############################
+# BEAGLEBONE BLACK INTERFACE
+##############################
 
 def establish_connection(ip):
     try:
         # Define SSH connection parameters
-        print("ip = ", ip)
+        ip_address = "ip: " + ip
+        write_console(ip_address)
         host = ip               # BBB's IP address
         username = "debian"     # BBB username
         password = "temppwd"    # BBB password
         # Initialize an SSH client
-        print("Connecting...")
         write_console("Connecting...")
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         # Connect to the BBB
         ssh.connect(host, username=username, password=password)
-        print("Connected")
         write_console("Connected")
-        #print("ssh_status = ", shared_var.ssh_status)
-
 
     except paramiko.AuthenticationException:
-        print("Authentication failed")
         write_console("Authentication failed")
     except paramiko.SSHException as e:
-        print(f"SSH connection failed: {str(e)}")
         write_console(f"SSH connection failed: {str(e)}")
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
         write_console(f"An error occurred: {str(e)}")
 
 def end_connection():
@@ -59,70 +47,45 @@ def end_connection():
 
 def get_ADC_value(command):
     global ADC_Value
-    print("Executing Command: ", command)
    
-    # Execute the command
+    # Execute command
     stdin, stdout, stderr = ssh.exec_command(command)
 
-    # Combine stderr with stdout
-    #stdout.channel.set_combine_stderr(True)
-    print("Sending the output")
     # Read the output as a single string
     ADC_Value = stdout.read(30).decode("utf-8")
-    
-    # Print the script's output
-    print("Received: ", ADC_Value)
-    #print(stdout.read(18).decode("utf-8"))
          
-    # Explicitly close the SSH connection
     del stdin, stdout, stderr  
     return ADC_Value
 
 def flash_MCU():
-    msg = None 
-    flashed_flag = 0
-    global flash_status
-    print("Board Flash Start")
-    write_console("MCU Flashing Started")
-    # Execute the command
-    #activate_command = f'source ~/myenv/bin/activate'
-    #run_script_command = f'python sample_flash.py'
-    #combined_command = f'{activate_command} && {run_script_command}'
-    #run_command = f'source {virtualenv_activate} && python {script_to_run}'
-
-    #stdin, stdout, stderr = ssh.exec_command(combined_command)
+    
+    flashed = False
+    # Execute command
     stdin, stdout, stderr = ssh.exec_command("source myenv/bin/activate && python simple_flash.py")
-    print("Command sent to BBB")
-    #print(stdout.read().decode("utf-8"))
+    
+    # Get results
     msg = (stdout.read().decode("utf-8"))
-    print(msg)
     lines = msg.split('\n')
     for line in lines:
         write_console(line)
         if "MCU flashed successfully." in line:
-            flashed_flag = 1
-    if (flashed_flag == 1):
-        flash_status = "Flashed"
-    else: flash_status = "Flashing Failed"
-    print(flash_status)
+            flashed = True
+    
     del stdin, stdout, stderr  
+    return flashed
 
 def test_can():
-    msg = None
     sent = None 
     received = None
-    global can_status   
-
-    can_status = None
+    can_OK = False
     
-    print("CAN test started")
-    write_console("CAN test started")
+    # Execute command
     #stdin, stdout, stderr = ssh.exec_command("source myenv/bin/activate && python can_test.py")
     stdin, stdout, stderr = ssh.exec_command("python can_test.py")
-    print("Command sent to BBB")
-    #print(stdout.read().decode("utf-8")) #use this to send a meaningful msg
+    write_console("Command sent to BBB")
+
+    # Get the results
     msg = (stdout.read().decode("utf-8"))
-    #print(msg)
     write_console(msg)
 
     lines = msg.split('\n')
@@ -132,12 +95,9 @@ def test_can():
         elif "can1  00000023" in line:
             received = line.split("[8]")[1].strip()
 
-    print("Message Sent to MCU: ", sent)
-    print("Message Received from MCU (expected = sent message incremented by 1): ", received)
-
+    # Print results on the console
     msg_sent = "Message Sent to MCU: "+sent
     msg_received = "Message Received from MCU (expected = sent message incremented by 1): "+received
-
     write_console(msg_sent)
     write_console(msg_received)
 
@@ -147,89 +107,74 @@ def test_can():
     #print("sent_bytes: ", sent_bytes)
     #print("received_bytes: ", received_bytes)
 
-    can_ok = 0
-
+    # Compare sent and received messages
+    can_count = 0
     for i, (sent_byte, received_byte) in enumerate(zip(sent_bytes, received_bytes)):
         sent_byte = sent_byte.strip("'")
         received_byte = received_byte.strip("'")
         if int(sent_byte, 16) + 1 == int(received_byte, 16):
-            can_ok = can_ok+1
+            can_count += 1
     
-    if can_ok == 8:
-        can_status = "CAN BUS OK"
+    if can_count == 8:
+        can_OK = True
     else: 
-        can_status = "CAN BUS NOT OK"
-    can_ok = 0
+        can_OK = False
+    can_count = 0
     
     del stdin, stdout, stderr
-
-    print(can_status)
-    write_console(can_status)
-    write_console_end_section()
-    #print("Sending the output")
-    #msg = stdout.read(30).decode("utf-8")
-    #print ("Message = ", msg)
+    return can_OK
     
 
 def test_EEPROM():
-    msg = None
-    sent = None 
-    received = None
-    value = None
-    global eeprom_status 
-
-    eeprom_status = None
-
-    print("EEPROM test started")
     write_console("EEPROM test started")
-    #stdin, stdout, stderr = ssh.exec_command("source myenv/bin/activate && python can_test.py")
+    written_data = None
+    read_data = None
+    eeprom_OK = False
+
+    # Execute command
     stdin, stdout, stderr = ssh.exec_command("python EEPROM_test.py")
-    print("Command sent to BBB")
-    #print(stdout.read().decode("utf-8")) #use this to send a meaningful msg
+    write_console("Command sent to BBB")
+    
+    # Get the results
     msg = (stdout.read().decode("utf-8"))
-    print(msg)
+    #print(msg)
     write_console(msg)
 
     lines = msg.split('\n')
-    #print(lines)
     for line in lines[5:]:  # Consider the last two lines
         if "can1  00000023" in line:
             value = line.split("[8]")[1].strip()
-            if sent is None:
-                sent = value
-            elif received is None:
-                received = value
-            
-    print("Sent to EEPROM: ", sent)
-    print("Received from EEPRM: ", received)
-
-    msg_sent = "String of random bytes written to EEPROM: " + sent
-    msg_received = "String of random bytes read from EEPROM: " + received
-
-    write_console(msg_sent)
-    write_console(msg_received)
-
-    if (sent == received):
-        eeprom_status = "EEPROM OK"
-    else:
-        eeprom_status = "EEPROM NOT OK"
+            if written_data is None:
+                written_data = value
+            elif read_data is None:
+                read_data = value
     
+    # Write results on the console:
+    msg_written_data = "Data written to EEPROM: " + written_data
+    msg_read_data = "Data read from EEPROM: " + read_data
+    write_console(msg_written_data)
+    write_console(msg_read_data)
+
+    # Compare data written and data read back from the EEPROM: 
+    if (written_data == read_data):
+        eeprom_OK = True
+    else:
+        eeprom_OK = False
     
     del stdin, stdout, stderr
-    print(eeprom_status)
-    write_console(eeprom_status)
-    write_console_end_section()
+    return eeprom_OK
 
 def UV_light_button_push():
-    # Execute the command
+    # Execute command
     stdin, stdout, stderr = ssh.exec_command("python UV_pushbutton.py")
     del stdin, stdout, stderr  
 
 def open_door():
     write_console("Opening Door...")
+    # Execute command
     stdin, stdout, stderr = ssh.exec_command("python open_door_sw.py")
-    del stdin, stdout, stderr  
     write_console("Door Open")
+    del stdin, stdout, stderr  
     door_open = True
     return door_open
 
@@ -242,35 +187,41 @@ def close_door():
     return door_closed
 
 def HEPA_fan_button_push():
-    # Execute the command
     stdin, stdout, stderr = ssh.exec_command("python HEPA_pushbutton.py")
     del stdin, stdout, stderr
 
+
+
+##############################
+# GUI
+##############################
 dpg.create_context()
 dpg.create_viewport(title='Custom Title', width=1000, height=700)
 dpg.setup_dearpygui()
 
 def read_24V(sender, app_data):
+    write_console("24V RAIL VOLTAGE TEST START")
     global file_name 
     global test_fail
+    # Execute Command
     command = "python get_24V.py"
-    write_console("24V Rail Voltage Test Start")
     ADC_Value = get_ADC_value(command)
+
+    # Print Results
     ADC_float = round(float(ADC_Value),3)
     msg = "24VDC: "+str(ADC_float)
     write_console(msg)
     dpg.set_value("24V", ADC_float) 
     if 23.52 <= ADC_float <= 24.48: #+-2%
         dpg.bind_item_theme("24V_RESULT", pass_theme)
-        write_console("24V Rail Test Passed")
+        write_console("24V RAIL VOLTAGE TEST PASSED")
     else: 
         test_fail = True
         dpg.bind_item_theme("24V_RESULT", fail_theme)
-        write_console("24V Rail Test Failed")
-    print ("Test Fail in read_24V = ", test_fail)
+        write_console("24V RAIL VOLTAGE TEST FAILED")
     write_console_end_section()
 
-
+    # Write to csv file:
     #file = open(file_name, 'a', newline ='')
     #print("function file name = ", file_name)
     #with file:    
@@ -279,86 +230,79 @@ def read_24V(sender, app_data):
     #    writer.writerow(["24V Test"])
 
 def read_5V(sender, app_data):
-    #global ADC_Value
+    write_console("5V RAIL VOLTAGE TEST START")
     global test_fail 
-
+    # Execute command
     command = "python get_5V.py"
-    write_console("5V Rail Voltage Test Start")
     ADC_Value = get_ADC_value(command)
+    # Print results
     ADC_float = round(float(ADC_Value),3)
     dpg.set_value("5V", ADC_float) 
     msg = "5VDC: "+str(ADC_float)
     write_console(msg)
     if 4.90 <= ADC_float <= 5.10: #+-2%
         dpg.bind_item_theme("5V_RESULT", pass_theme)
-        write_console("5V Rail Test Passed")
+        write_console("5V RAIL VOLTAGE TEST PASSED")
     else:
         test_fail = True
         dpg.bind_item_theme("5V_RESULT", fail_theme)
-        write_console("5V Rail Test Failed")
+        write_console("5V RAIL VOLTAGE TEST FAILED")
     write_console_end_section()
 
 def read_3V3(sender, app_data):
-    #global ADC_Value
+    write_console("3.3V RAIL VOLTAGE TEST START")
     global test_fail  
-
+    # Execute command
     command = "python get_3V3.py"
-    write_console("3.3V Rail Voltage Test Start")
-    print("Command: ", command)
     ADC_Value = get_ADC_value(command)
+    # Print resultS
     ADC_float = round(float(ADC_Value),3)
     msg = "3.3VDC: "+str(ADC_float)
     write_console(msg)
     dpg.set_value("3V3", ADC_float) 
     if 3.263 <= ADC_float <= 3.366: #+-2%
         dpg.bind_item_theme("3V3_RESULT", pass_theme)
-        write_console("3.3V Rail Test Passed")
+        write_console("3.3V RAIL VOLTAGE TEST PASSED")
     else:
         test_fail = True
         dpg.bind_item_theme("3V3_RESULT", fail_theme)
-        write_console("3.3V Rail Test Failed")
+        write_console("3.3V RAIL VOLTAGE TEST FAILED")
     write_console_end_section()
 
 def read_5Vaux(sender, app_data):
-    #global ADC_Value
+    write_console("5V_AUX RAIL VOLTAGE TEST START")
     global test_fail 
-
+    # Execute command
     command = "python get_5Vaux.py"
-    write_console("5V_AUX Rail Voltage Test Start")
-    print("Command: ", command)
     ADC_Value = get_ADC_value(command)
+    # Print results
     ADC_float = round(float(ADC_Value),3)
     msg = "5VauxDC: "+str(ADC_float)
     write_console(msg)
     dpg.set_value("5VAUX", ADC_float) 
     if 4.9 <= ADC_float <= 5.1: #+-2%
         dpg.bind_item_theme("5Vaux_RESULT", pass_theme)
-        write_console("5V_AUX Rail Test Passed")
+        write_console("5V_AUX RAIL VOLTAGE TEST PASSED")
     else: 
         test_fail = True
         dpg.bind_item_theme("5Vaux_RESULT", fail_theme)
-        write_console("5V_AUX Rail Test Failed")
+        write_console("5V_AUX RAIL VOLTAGE TEST START")
     write_console_end_section()
 
 def read_UV_current():
-    global test_fail  
-    #global UV_ON
-    command = "python UV_sns.py"
     write_console("Running UV Current Sense Test")
-    print("Command: ", command)
+    global test_fail  
+    # Execute command
+    command = "python UV_sns.py"
     ADC_Value = get_ADC_value(command)
+    # Print results
     ADC_float = round(float(ADC_Value),3)
     msg = "UV Current ADC Value: "+str(ADC_float)
     write_console(msg)
-    #dpg.set_value("UV Current Sense ADC Value:", ADC_float) #Set test output field 
     if 1.3 <= ADC_float: #With Rsns=100mR, Current Sense Op-Amp will saturate to rail voltage. Change to 25mR Rsns in next rev.
-        #dpg.bind_item_theme("UV_RESULT", pass_theme)
         UV_ON = True
     else:
-        #test_fail = "Test Failed"
-        #dpg.bind_item_theme("UV_RESULT", fail_theme)
         UV_ON = False
-    #write_console_end_section()
     return UV_ON
 
 def bbb_connect(sender, app_data):
@@ -374,113 +318,141 @@ def bbb_connect(sender, app_data):
 def bbb_disconnect(sender, app_data):
     dpg.configure_item("ssh_disconnect", enabled=False)
     end_connection()
-    #shared_var.ssh_status == "Disconnected"
     dpg.configure_item("ssh_btn", enabled=True)
     write_console("Disconnected")
     write_console_end_section()    
 
 def flash(sender, app_data):
-    global flash_status
+    write_console("MCU FLASH STARTED")
     global test_fail
-    flash_MCU()
-    if (flash_status == "Flashed"):
+    
+    # Execute command
+    flashed = flash_MCU()
+
+    # Print results
+    if flashed:
+        write_console("MCU FLASHED")
         dpg.bind_item_theme("FLASH_RESULT", pass_theme)
     else: 
+        write_console("MCU FLASH FAILED")
         dpg.bind_item_theme("FLASH_RESULT", fail_theme)
         test_fail = True
     write_console_end_section()
 
 def can(sender, app_data):
-    global can_status
+    write_console("CAN BUS TEST STARTED")
     global test_fail
-    test_can()
-    if (can_status == "CAN BUS OK"):
+
+    # Execute Command
+    can_OK = test_can()
+
+    # Print Results
+    if can_OK: 
+        write_console("CAN BUS OK")
         dpg.bind_item_theme("CAN_RESULT", pass_theme)
     else: 
         test_fail = True
+        write_console("CAN BUST TEST FAILED")
         dpg.bind_item_theme("CAN_RESULT", fail_theme)
+    write_console_end_section()
 
 def default_ip(sender, app_data):
     dpg.set_value("ip_addr", "10.13.11.245")
 
 def eeprom(sender, app_data):
     global test_fail
-    global eeprom_status
-    test_EEPROM()
-    print("eepropm_status gui: ", eeprom_status)
-    if (eeprom_status == "EEPROM OK"):
+    # Execute command
+    eeprom_OK = test_EEPROM()
+    
+    # Print results
+    if eeprom_OK: 
+        write_console("EEPROM OK")
         dpg.bind_item_theme("EEPROM_RESULT", pass_theme)
     else: 
         test_fail = True
+        write_console("EEPROM TEST  FAILED")
         dpg.bind_item_theme("EEPROM_RESULT", fail_theme)
+    write_console_end_section()
 
 def UV_light(sender, app_data):
     global test_fail
-    UV_test_status = None
+    test_fail = False
     door_open = None
     door_closed = None
-    #global UV_ON
     write_console("UV light test start")
-    door_open = open_door()             # Open door
+    #Open Door
+    door_open = open_door()
+
+    # Attempt test with door open
     if door_open:
         write_console("Attempting UV Test")
-        UV_light_button_push()  # Try UV light turn-on - it should fail to turn on
+        # Press the UV_pushbutton
+        UV_light_button_push()  
         time.sleep(3)
+        # Measure UV load current
         UV_ON = read_UV_current()
+        # Print results
         if not UV_ON:
-            write_console("UV OFF (ok)")
+            write_console("DOOR OPEN - UV is OFF")
         else: 
-            write_console("UV ON")
+            write_console("ERROR: DOOR OPEN - UV ON")
             write_console("Stopping Test") 
             dpg.bind_item_theme("UV_RESULT", fail_theme)
             UV_light_button_push()  # Turn off UV light
+            test_fail = True
             return 
-    door_closed = close_door()            # Close door
+    # Attempt test with door closed
+    door_closed = close_door()            
     time.sleep(0.1)
     if door_closed:
         write_console("Attempting UV Test")
-        UV_light_button_push()  # Try UV light turn-on - it should turn on
+        # Press the UV pushbutton
+        UV_light_button_push()  
         time.sleep(3)
+        # Measure UV load current
         UV_ON = read_UV_current()
+        # Print results
         if UV_ON:
-            write_console ("UV ON (ok)")
-            write_console("UV OK")
+            write_console("DOOR CLOSED - UV ON")
         else: 
-            write_console("UV OFF")
-            write_console ("UV Not Detected")    
-            dpg.bind_item_theme("UV_RESULT", fail_theme)   
+            write_console("ERROR: DOOR CLOSED - UV OFF")
+            test_fail = True
             return 
-    UV_light_button_push()  # Turn off UV light
+    # Turn off UV load
+    write_console("Turning off UV load...")
+    UV_light_button_push() 
     time.sleep(3)
+    # Verify the UV load is OFF
     UV_ON = read_UV_current()
     if not UV_ON:
-        write_console("UV light test end")
         dpg.bind_item_theme("UV_RESULT", pass_theme)
     else:
-        write_console("UV light did not turn off correctly")
+        write_console("ERROR: UV lOAD did not turn off correctly")
         write_console("Stopping Test")
+        test_fail = True
         UV_light_button_push()  # Turn off UV light
-        dpg.bind_item_theme("UV_RESULT", fail_theme)
         return
+    # Print Results
+    if test_fail: 
+        write_console("UV TEST FAILED")
+        dpg.bind_item_theme("UV_RESULT", fail_theme)
+    else: write_console("UV TEST SUCCESSFUL")
     write_console_end_section()
-    #dpg.configure_item("CONSOLE", tracked=False)
-    #dpg.configure_item("console_msg_endline", tracked=False)
-
-
 
 def HEPA_fan(sender, app_data):
+    # TO DO: Add current monitoring hardware and update code
     global test_fail
     write_console("HEPA fan test start")
     HEPA_fan_button_push()
     time.sleep(3)
     HEPA_fan_button_push()
     write_console("HEPA fan test end")
+    dpg.bind_item_theme("HEPA_RESULT", pass_theme)
     write_console_end_section()
     
 def start_test(sender, app_data):
     global file_name
     global tast_fail
-    #test_fail = False
 
     reset_results()
     dpg.configure_item("run_test", enabled=False)
@@ -503,49 +475,75 @@ def start_test(sender, app_data):
         write.writerows(data)
     
     #Run tests
-    open_door() #Make sure door is open
+
+    #Open door
+    open_door() 
 
     read_24V(sender, app_data)
-    write_console(test_fail)
-    print ("Test Fail in start_test = ", test_fail)
+    #write_console(test_fail)
     if test_fail: 
         stop_test()
         return
     
     read_5V(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
  
     read_3V3(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     read_5Vaux(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     flash(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     can(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     eeprom(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     UV_light(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
 
     HEPA_fan(sender, app_data)
-    write_console(test_fail)
-    if test_fail: return
+    #write_console(test_fail)
+    if test_fail: 
+        stop_test()
+        return
+    
+    dpg.configure_item("reset_test", enabled=True)
+    
+    
     #dpg.configure_item("console_msg", tracked=False)
 
 def stop_test():
+    #reset_results()
+    dpg.configure_item("reset_test", enabled=True)
+
+def reset_test(sender, app_data):
+    reset_test_output()
     reset_results()
     dpg.configure_item("run_test", enabled=True)
 
@@ -602,7 +600,8 @@ with dpg.window(label="Example Window", width=1000, height=700):
             dpg.add_button(label="USE DEFAULT IP ADDRESS", callback=default_ip)
             dpg.add_button(label="CONNECT TO BBB", tag="ssh_btn", callback=bbb_connect)
             dpg.add_button(label="DISCONNECT", tag="ssh_disconnect", callback=bbb_disconnect, enabled=False)
-            dpg.add_button(label="START TEST", tag="run_test", callback=start_test)           
+            dpg.add_button(label="START TEST", tag="run_test", callback=start_test)      
+            dpg.add_button(label="RESET TEST", tag="reset_test", callback=reset_test, enabled=False)
             
         with dpg.child_window(label="Data 2", width=400, height=300):
             with dpg.table():
